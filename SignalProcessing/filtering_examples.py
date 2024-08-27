@@ -41,10 +41,11 @@ class FIRLS(FIR):
             order=round(5 * sampling_rate / frequency_range[0]) if order is None else order
         )
 
+        # modify order to make odd since "signal.firls" take odd order value
         self.order = Utility.make_integer_odd_by_incrementing_by_one(self.order)
-        # print(f'{self.order = }')
 
-        self.frequency_vector = np.array([
+        # calculate frequency vector using transition width
+        self.frequency_vector: np.array = np.array([
             0,
             self.frequency_range[0] - (self.frequency_range[0] * self.transition_width),
             self.frequency_range[0],
@@ -52,7 +53,6 @@ class FIRLS(FIR):
             self.frequency_range[1] + (self.frequency_range[1] * self.transition_width),
             self.nyquist_frequency
         ])
-        # print(f'{self.frequency_vector = }')
 
         #
         # NOTE: No need to divide by Nyquist frequency. Because "band" parameter of "signal.firls" takes monotonic
@@ -61,6 +61,7 @@ class FIRLS(FIR):
         # refer: https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.firls.html
         #
 
+        # create filer kernel using "signal.firls"
         self.filter_kernel: np.ndarray = signal.firls(
             numtaps=self.order,
             bands=self.frequency_vector,
@@ -76,18 +77,19 @@ class Evaluation:
 
         self.hz = None
         self.filter_power = None
+        self.interpolated_hz = None
+        self.interpolated_filter_power = None
+        self.interpolated_ideal_power = None
 
     def evaluate_kernel(self):
         # compute the power spectrum of the filter kernel
         filter_power = np.square(np.absolute(fft.fft(self.filter_kernel)))
-        # print(f'{filter_power = }')
 
         # compute the frequencies vector and remove negative frequencies
+        # @WATCH: "Understanding the Discrete Fourier Transform and the FFT" @09:26
+        #           https://www.youtube.com/watch?v=QmgJmh2I3Fw&t=145s
         self.hz = np.linspace(0, self.nyquist_frequency, math.floor(len(self.filter_kernel) / 2) + 1)
-        # print(f'{self.hz = }')
-
         self.filter_power = filter_power[:len(self.hz)]
-        # print(f'{self.filter_power = }')
 
 
 def firls_ex1():
@@ -98,7 +100,6 @@ def firls_ex1():
         transition_width=0.1,
         order=order
     )
-    # print(firls.frequency_vector)
 
     evaluation = Evaluation(
         filter_kernel=firls.filter_kernel,
@@ -119,7 +120,6 @@ def firls_ex1():
     plt.xlim(0, firls.frequency_range[0] * 4)
     plt.legend()
     plt.title('Frequency response of filter (firls)')
-    plt.xlabel('Frequency (Hz)')
     plt.ylabel('Filter gain')
 
     plt.subplot(224)
@@ -127,7 +127,6 @@ def firls_ex1():
              linewidth=2)
     plt.xlim(0, firls.frequency_range[0] * 4)
     plt.ylim(-50, 2)
-    plt.title('Frequency response of filter (firls)')
     plt.xlabel('Frequency (Hz)')
     plt.ylabel('Filter gain (dB)')
 
