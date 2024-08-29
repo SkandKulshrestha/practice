@@ -71,15 +71,15 @@ class FIRLS(FIR):
 class FIR1(FIR):
     SHAPE: Tuple = (0, 0, 1, 1, 0, 0)
 
-    def __init__(self, sampling_rate: int, frequency_range: Tuple[int, int], transition_width: float, order: int):
+    def __init__(self, sampling_rate: int, frequency_range: Tuple[int, int], order: int):
         super().__init__(
             sampling_rate=sampling_rate,
             frequency_range=frequency_range,
-            transition_width=transition_width,
+            transition_width=0,
             order=order
         )
 
-        # modify order to make odd since "signal.firls" take odd order value
+        # modify order to make odd since "signal.firwin" take odd order value
         self.order = Utility.make_integer_odd_by_incrementing_by_one(self.order)
 
         # calculate frequency vector using transition width
@@ -92,11 +92,56 @@ class FIR1(FIR):
             self.nyquist_frequency
         ])
 
-        # create filer kernel using "signal.firls"
+        # [TODO] Query: why "pass_zero=False"?
+
+        # create filer kernel using "signal.firwin"
         self.filter_kernel: np.ndarray = signal.firwin(
             numtaps=self.order,
             cutoff=self.frequency_range,
-            fs=self.sampling_rate
+            fs=self.sampling_rate,
+            pass_zero=False
+        )
+
+
+@dataclass
+class IIR:
+    sampling_rate: int
+    nyquist_frequency: int = field(init=False)
+    frequency_range: Tuple[int, int]
+    transition_width: float
+    order: int
+
+    def __post_init__(self):
+        self.nyquist_frequency = self.sampling_rate // 2
+
+
+class IIRButterworth(IIR):
+    SHAPE: Tuple = (0, 0, 1, 1, 0, 0)
+
+    def __init__(self, sampling_rate: int, frequency_range: Tuple[int, int], order: int):
+        super().__init__(
+            sampling_rate=sampling_rate,
+            frequency_range=frequency_range,
+            transition_width=0,
+            order=order
+        )
+
+        # calculate frequency vector using transition width
+        self.frequency_vector: np.array = np.array([
+            0,
+            self.frequency_range[0],
+            self.frequency_range[0],
+            self.frequency_range[1],
+            self.frequency_range[1],
+            self.nyquist_frequency
+        ])
+
+        # create filer kernel using "signal.firls"
+        self.filter_kernel_b, self.filter_kernel_a = signal.butter(
+            N=self.order,
+            Wn=self.frequency_range,
+            fs=self.sampling_rate,
+            btype='bandpass'
         )
 
 
@@ -126,15 +171,15 @@ class Evaluation:
         self.filter_power: np.ndarray = filter_power[:len(self.hz)]
 
     def correlate(self, normalize):
-        interpolated_length = int(self.hz[-1] // normalize)
-        filter_power = np.zeros((interpolated_length,), dtype=self.filter_power.dtype)
-        ideal_power = np.zeros(filter_power.shape, dtype=filter_power.dtype)
+        interpolated_hz = np.arange(int(self.hz[-1] // normalize))
+        interpolated_filter_power = np.zeros(interpolated_hz.shape, dtype=self.filter_power.dtype)
+        interpolated_ideal_power = np.zeros(interpolated_filter_power.shape, dtype=interpolated_filter_power.dtype)
 
-        for hz in range(interpolated_length):
+        for hz in interpolated_hz:
             original_hz = hz * normalize
 
             # interpolate ideal power
-            pass
+            raise NotImplementedError('Coming soon...')
 
 
 def firls_ex1():
@@ -223,7 +268,7 @@ def firls_ex3():
     print('Varying Transition Width')
     sampling_rate = 1024
     frequency_range = (20, 45)
-    transition_widths = np.linspace(0.01, 0.4, 10)
+    transition_widths: np.ndarray = np.linspace(0.01, 0.4, 10)
     for i, transition_width in enumerate(transition_widths):
         firls = FIRLS(
             sampling_rate=sampling_rate,  # Hz
@@ -264,27 +309,26 @@ def firls_ex3():
 
 
 def fir1_ex1():
-    firls = FIR1(
+    fir1 = FIR1(
         sampling_rate=1024,  # Hz
         frequency_range=(20, 45),
-        transition_width=0.1,
         order=round(5 * 1024 / 20)
     )
 
-    evaluation = Evaluation(firls)
+    evaluation = Evaluation(fir1)
     evaluation.evaluate_kernel()
 
     plt.subplot(221)
-    plt.plot(firls.filter_kernel, color='blue', linestyle='-', linewidth=2)
+    plt.plot(fir1.filter_kernel, color='blue', linestyle='-', linewidth=2)
     plt.xlabel('Time points')
     plt.title('Filter kernel (fir1)')
 
     plt.subplot(222)
     plt.plot(evaluation.hz, evaluation.filter_power, color='black', linestyle='-', marker='s', linewidth=2,
              label='Actual')
-    plt.plot(firls.frequency_vector, firls.SHAPE, color='red', linestyle='-', marker='o',
+    plt.plot(fir1.frequency_vector, fir1.SHAPE, color='red', linestyle='-', marker='o',
              linewidth=2, label='Ideal')
-    plt.xlim(0, firls.frequency_range[0] * 4)
+    plt.xlim(0, fir1.frequency_range[0] * 4)
     plt.legend()
     plt.title('Frequency response of filter (fir1)')
     plt.ylabel('Filter gain')
@@ -292,7 +336,87 @@ def fir1_ex1():
     plt.subplot(224)
     plt.plot(evaluation.hz, 10 * np.log10(evaluation.filter_power), color='black', linestyle='-', marker='s',
              linewidth=2)
-    plt.xlim(0, firls.frequency_range[0] * 4)
+    plt.xlim(0, fir1.frequency_range[0] * 4)
+    plt.ylim(-50, 2)
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel('Filter gain (dB)')
+
+    plt.show()
+
+
+def fir1_ex2():
+    print('Varying Order')
+    sampling_rate = 1024
+    frequency_range = (20, 45)
+    for i in range(1, 10):
+        fir1 = FIR1(
+            sampling_rate=sampling_rate,  # Hz
+            frequency_range=frequency_range,
+            order=round(i * sampling_rate / frequency_range[0])
+        )
+
+        evaluation = Evaluation(fir1)
+        evaluation.evaluate_kernel()
+        evaluation.correlate(1)
+        print(f'Order ({fir1.order:3}) = {evaluation.pearson_correlation:.4f}')
+
+        plt.subplot(221)
+        plt.plot(np.arange(fir1.order) - fir1.order / 2, fir1.filter_kernel + 0.02 * i, linestyle='-')
+
+        plt.subplot(222)
+        plt.plot(evaluation.hz, evaluation.filter_power, linestyle='-', label=f'Order = {fir1.order}')
+
+        plt.subplot(224)
+        plt.plot(evaluation.hz, 10 * np.log10(evaluation.filter_power), linestyle='-')
+
+    plt.subplot(221)
+    plt.xlabel('Time points')
+    plt.title('Filter kernel (fir1)')
+
+    plt.subplot(222)
+    plt.plot(fir1.frequency_vector, fir1.SHAPE, linestyle='--', label='Ideal')
+    plt.xlim(0, fir1.frequency_range[0] * 5)
+    plt.legend()
+    plt.title('Frequency response of filter (fir1)')
+    plt.ylabel('Filter gain')
+
+    plt.subplot(224)
+    plt.xlim(0, fir1.frequency_range[0] * 5)
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel('Filter gain (dB)')
+
+    plt.show()
+
+
+def iir_butterworth_ex1():
+    fir1 = IIRButterworth(
+        sampling_rate=1024,  # Hz
+        frequency_range=(20, 45),
+        order=5
+    )
+
+    evaluation = Evaluation(fir1)
+    evaluation.evaluate_kernel()
+
+    plt.subplot(221)
+    plt.plot(fir1.filter_kernel, color='blue', linestyle='-', linewidth=2)
+    plt.xlabel('Time points')
+    plt.title('Filter kernel (fir1)')
+
+    plt.subplot(222)
+    plt.plot(evaluation.hz, evaluation.filter_power, color='black', linestyle='-', marker='s', linewidth=2,
+             label='Actual')
+    plt.plot(fir1.frequency_vector, fir1.SHAPE, color='red', linestyle='-', marker='o',
+             linewidth=2, label='Ideal')
+    plt.xlim(0, fir1.frequency_range[0] * 4)
+    plt.legend()
+    plt.title('Frequency response of filter (fir1)')
+    plt.ylabel('Filter gain')
+
+    plt.subplot(224)
+    plt.plot(evaluation.hz, 10 * np.log10(evaluation.filter_power), color='black', linestyle='-', marker='s',
+             linewidth=2)
+    plt.xlim(0, fir1.frequency_range[0] * 4)
     plt.ylim(-50, 2)
     plt.xlabel('Frequency (Hz)')
     plt.ylabel('Filter gain (dB)')
@@ -302,7 +426,10 @@ def fir1_ex1():
 
 if __name__ == '__main__':
     # firls_ex1()
-    # firls_ex2()
+    firls_ex2()
     # firls_ex3()
 
-    fir1_ex1()
+    # fir1_ex1()
+    # fir1_ex2()
+
+    # iir_butterworth_ex1()
