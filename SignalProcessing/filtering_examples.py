@@ -4,6 +4,8 @@ import numpy as np
 
 from dataclasses import dataclass, field
 from typing import Tuple
+
+from PIL.ImageChops import constant
 from scipy import signal, fft
 from matplotlib import pyplot as plt
 
@@ -174,12 +176,63 @@ class Evaluation:
         interpolated_hz = np.arange(int(self.hz[-1] // normalize))
         interpolated_filter_power = np.zeros(interpolated_hz.shape, dtype=self.filter_power.dtype)
         interpolated_ideal_power = np.zeros(interpolated_filter_power.shape, dtype=interpolated_filter_power.dtype)
+        frequency_vector = self.frequency_vector
 
-        for hz in interpolated_hz:
-            original_hz = hz * normalize
+        hz_index = 0
+        slope = 0
+        _constant = 0
+        index_changed = True
+        fall_slope = rise_slope = None
+        fall_constant = rise_constant = None
 
-            # interpolate ideal power
-            raise NotImplementedError('Coming soon...')
+        if len(frequency_vector) == 6:
+            # calculate slope and constant once for ideal trace
+            if frequency_vector[2] != frequency_vector[1]:
+                rise_slope = 1 / (frequency_vector[2] - frequency_vector[1])
+                rise_constant = 0 - rise_slope * frequency_vector[1]
+            if frequency_vector[3] != frequency_vector[4]:
+                fall_slope = 1 / (frequency_vector[3] - frequency_vector[4])
+                fall_constant = 0 - fall_slope * frequency_vector[4]
+
+            for hz in interpolated_hz:
+                original_hz = hz * normalize
+
+                # interpolate ideal power
+                if original_hz <= frequency_vector[1]:
+                    pass
+                elif original_hz < frequency_vector[2]:
+                    interpolated_ideal_power[hz] = rise_slope * original_hz + rise_constant
+                elif original_hz <= frequency_vector[3]:
+                    interpolated_ideal_power[hz] = 1
+                elif original_hz < frequency_vector[4]:
+                    interpolated_ideal_power[hz] = fall_slope * original_hz + fall_constant
+                else:
+                    pass
+
+                # interpolate filter power
+                if original_hz == self.hz[hz_index]:
+                    interpolated_filter_power[hz] = self.filter_power[hz_index]
+                    hz_index += 1
+                    index_changed = True
+                else:
+                    if original_hz > self.hz[hz_index]:
+                        hz_index += 1
+                        index_changed = True
+
+                    # calculate slope and constant only when change in hz index is detected
+                    if index_changed:
+                        slope = (self.filter_power[hz_index] - self.filter_power[hz_index - 1]) / (
+                                self.hz[hz_index] - self.hz[hz_index - 1])
+                        _constant = self.filter_power[hz_index] - (slope * self.hz[hz_index])
+                        index_changed = False
+
+                    # y = mx + c
+                    interpolated_filter_power[hz] = slope * original_hz + _constant
+
+            self.interpolated_filter_power = interpolated_filter_power
+            self.interpolated_ideal_power = interpolated_ideal_power
+            self.interpolated_hz = interpolated_hz
+            self.pearson_correlation = np.corrcoef(interpolated_filter_power, interpolated_ideal_power)[0, 1]
 
 
 def firls_ex1():
@@ -192,6 +245,7 @@ def firls_ex1():
 
     evaluation = Evaluation(firls)
     evaluation.evaluate_kernel()
+    evaluation.correlate(normalize=1)
 
     plt.subplot(221)
     plt.plot(firls.filter_kernel, color='blue', linestyle='-', linewidth=2)
@@ -205,8 +259,20 @@ def firls_ex1():
              linewidth=2, label='Ideal')
     plt.xlim(0, firls.frequency_range[0] * 4)
     plt.legend()
-    plt.title('Frequency response of filter (firls)')
+    plt.xlabel('Frequency (Hz)')
     plt.ylabel('Filter gain')
+    plt.title('Frequency response of filter (firls)')
+
+    plt.subplot(223)
+    plt.plot(evaluation.interpolated_hz, evaluation.interpolated_filter_power, color='black', linestyle='-',
+             marker='s', linewidth=2, label=f'Actual ({evaluation.pearson_correlation:.3f})')
+    plt.plot(evaluation.interpolated_hz, evaluation.interpolated_ideal_power, color='red', linestyle='-',
+             marker='o', linewidth=2, label='Ideal')
+    plt.xlim(0, firls.frequency_range[0] * 4)
+    plt.legend()
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel('Filter gain')
+    plt.title('Interpolated frequency response of filter (firls) for correlation')
 
     plt.subplot(224)
     plt.plot(evaluation.hz, 10 * np.log10(evaluation.filter_power), color='black', linestyle='-', marker='s',
@@ -215,6 +281,7 @@ def firls_ex1():
     plt.ylim(-50, 2)
     plt.xlabel('Frequency (Hz)')
     plt.ylabel('Filter gain (dB)')
+    plt.title('Frequency response of filter (firls)')
 
     plt.show()
 
@@ -242,6 +309,10 @@ def firls_ex2():
         plt.subplot(222)
         plt.plot(evaluation.hz, evaluation.filter_power, linestyle='-', label=f'Order = {firls.order}')
 
+        plt.subplot(223)
+        plt.plot(evaluation.interpolated_hz, evaluation.interpolated_filter_power, linestyle='-',
+                 label=f'Order, Corr = {firls.order}, {evaluation.pearson_correlation:.3f}')
+
         plt.subplot(224)
         plt.plot(evaluation.hz, 10 * np.log10(evaluation.filter_power), linestyle='-')
 
@@ -253,13 +324,23 @@ def firls_ex2():
     plt.plot(firls.frequency_vector, firls.SHAPE, linestyle='--', label='Ideal')
     plt.xlim(0, firls.frequency_range[0] * 5)
     plt.legend()
-    plt.title('Frequency response of filter (firls)')
+    plt.xlabel('Frequency (Hz)')
     plt.ylabel('Filter gain')
+    plt.title('Frequency response of filter (firls)')
+
+    plt.subplot(223)
+    plt.plot(evaluation.interpolated_hz, evaluation.interpolated_ideal_power, linestyle='--', label='Ideal')
+    plt.xlim(0, firls.frequency_range[0] * 5)
+    plt.legend()
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel('Filter gain')
+    plt.title('Interpolated frequency response of filter (firls) for correlation')
 
     plt.subplot(224)
     plt.xlim(0, firls.frequency_range[0] * 5)
     plt.xlabel('Frequency (Hz)')
     plt.ylabel('Filter gain (dB)')
+    plt.title('Frequency response of filter (firls)')
 
     plt.show()
 
@@ -279,12 +360,18 @@ def firls_ex3():
 
         evaluation = Evaluation(firls)
         evaluation.evaluate_kernel()
+        evaluation.correlate(normalize=1)
+        print(f'T.W. ({firls.transition_width:.2f}) = {evaluation.pearson_correlation:.4f}')
 
         plt.subplot(221)
         plt.plot(np.arange(firls.order) - firls.order / 2, firls.filter_kernel + 0.02 * i, linestyle='-')
 
         plt.subplot(222)
         plt.plot(evaluation.hz, evaluation.filter_power, linestyle='-', label=f'T.W. = {firls.transition_width:.2f}')
+
+        plt.subplot(223)
+        plt.plot(evaluation.interpolated_hz, evaluation.interpolated_filter_power, linestyle='-',
+                 label=f'T.W., Corr = {firls.transition_width:.2f}, {evaluation.pearson_correlation:.3f}')
 
         plt.subplot(224)
         plt.plot(evaluation.hz, 10 * np.log10(evaluation.filter_power), linestyle='-')
@@ -297,13 +384,23 @@ def firls_ex3():
     plt.plot(firls.frequency_vector, firls.SHAPE, linestyle='--', label='Ideal')
     plt.xlim(0, firls.frequency_range[0] * 5)
     plt.legend()
-    plt.title('Frequency response of filter (firls)')
+    plt.xlabel('Frequency (Hz)')
     plt.ylabel('Filter gain')
+    plt.title('Frequency response of filter (firls)')
+
+    plt.subplot(223)
+    plt.plot(evaluation.interpolated_hz, evaluation.interpolated_ideal_power, linestyle='--', label='Ideal')
+    plt.xlim(0, firls.frequency_range[0] * 5)
+    plt.legend()
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel('Filter gain')
+    plt.title('Interpolated frequency response of filter (firls) for correlation')
 
     plt.subplot(224)
     plt.xlim(0, firls.frequency_range[0] * 5)
     plt.xlabel('Frequency (Hz)')
     plt.ylabel('Filter gain (dB)')
+    plt.title('Frequency response of filter (firls)')
 
     plt.show()
 
@@ -317,6 +414,7 @@ def fir1_ex1():
 
     evaluation = Evaluation(fir1)
     evaluation.evaluate_kernel()
+    evaluation.correlate(normalize=1)
 
     plt.subplot(221)
     plt.plot(fir1.filter_kernel, color='blue', linestyle='-', linewidth=2)
@@ -330,8 +428,20 @@ def fir1_ex1():
              linewidth=2, label='Ideal')
     plt.xlim(0, fir1.frequency_range[0] * 4)
     plt.legend()
-    plt.title('Frequency response of filter (fir1)')
+    plt.xlabel('Frequency (Hz)')
     plt.ylabel('Filter gain')
+    plt.title('Frequency response of filter (fir1)')
+
+    plt.subplot(223)
+    plt.plot(evaluation.interpolated_hz, evaluation.interpolated_filter_power, color='black', linestyle='-',
+             marker='s', linewidth=2, label=f'Actual ({evaluation.pearson_correlation:.3f})')
+    plt.plot(evaluation.interpolated_hz, evaluation.interpolated_ideal_power, color='red', linestyle='-',
+             marker='o', linewidth=2, label='Ideal')
+    plt.xlim(0, fir1.frequency_range[0] * 4)
+    plt.legend()
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel('Filter gain')
+    plt.title('Interpolated frequency response of filter (fir1) for correlation')
 
     plt.subplot(224)
     plt.plot(evaluation.hz, 10 * np.log10(evaluation.filter_power), color='black', linestyle='-', marker='s',
@@ -340,6 +450,7 @@ def fir1_ex1():
     plt.ylim(-50, 2)
     plt.xlabel('Frequency (Hz)')
     plt.ylabel('Filter gain (dB)')
+    plt.title('Frequency response of filter (fir1)')
 
     plt.show()
 
@@ -366,6 +477,10 @@ def fir1_ex2():
         plt.subplot(222)
         plt.plot(evaluation.hz, evaluation.filter_power, linestyle='-', label=f'Order = {fir1.order}')
 
+        plt.subplot(223)
+        plt.plot(evaluation.interpolated_hz, evaluation.interpolated_filter_power, linestyle='-',
+                 label=f'Order, Corr = {fir1.order}, {evaluation.pearson_correlation:.3f}')
+
         plt.subplot(224)
         plt.plot(evaluation.hz, 10 * np.log10(evaluation.filter_power), linestyle='-')
 
@@ -377,59 +492,92 @@ def fir1_ex2():
     plt.plot(fir1.frequency_vector, fir1.SHAPE, linestyle='--', label='Ideal')
     plt.xlim(0, fir1.frequency_range[0] * 5)
     plt.legend()
-    plt.title('Frequency response of filter (fir1)')
+    plt.xlabel('Frequency (Hz)')
     plt.ylabel('Filter gain')
+    plt.title('Frequency response of filter (fir1)')
+
+    plt.subplot(223)
+    plt.plot(evaluation.interpolated_hz, evaluation.interpolated_ideal_power, linestyle='--', label='Ideal')
+    plt.xlim(0, fir1.frequency_range[0] * 5)
+    plt.legend()
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel('Filter gain')
+    plt.title('Interpolated frequency response of filter (fir1) for correlation')
 
     plt.subplot(224)
     plt.xlim(0, fir1.frequency_range[0] * 5)
     plt.xlabel('Frequency (Hz)')
     plt.ylabel('Filter gain (dB)')
+    plt.title('Frequency response of filter (fir1)')
 
     plt.show()
 
 
 def iir_butterworth_ex1():
-    fir1 = IIRButterworth(
+    iir_butterworth = IIRButterworth(
         sampling_rate=1024,  # Hz
         frequency_range=(20, 45),
-        order=5
+        order=4
     )
 
-    evaluation = Evaluation(fir1)
-    evaluation.evaluate_kernel()
-
     plt.subplot(221)
-    plt.plot(fir1.filter_kernel, color='blue', linestyle='-', linewidth=2)
+    plt.plot(iir_butterworth.filter_kernel_b * 1e5, color='black', linestyle='-', linewidth=2, marker='s', label='B')
+    plt.plot(iir_butterworth.filter_kernel_a, color='red', linestyle='-', linewidth=2, marker='s', label='A')
     plt.xlabel('Time points')
-    plt.title('Filter kernel (fir1)')
+    plt.ylabel('Filter coefficient')
+    plt.title('Time-domain filter coefficients')
+
+    # evaluation using an impulse response
+    impulse_response = np.zeros(1001)
+    impulse_response[501] = 1
+
+    # apply the filter
+    filtered_impulse_response = signal.lfilter(
+        b=iir_butterworth.filter_kernel_b,
+        a=iir_butterworth.filter_kernel_a,
+        x=impulse_response,
+        axis=-1
+    )
+
+    # compute power spectrum
+    filter_power = np.square(np.absolute(fft.fft(filtered_impulse_response)))
+    hz = np.linspace(0, iir_butterworth.nyquist_frequency, math.floor(len(impulse_response) / 2) + 1)
+    filter_power = filter_power[:len(hz)]
 
     plt.subplot(222)
-    plt.plot(evaluation.hz, evaluation.filter_power, color='black', linestyle='-', marker='s', linewidth=2,
-             label='Actual')
-    plt.plot(fir1.frequency_vector, fir1.SHAPE, color='red', linestyle='-', marker='o',
-             linewidth=2, label='Ideal')
-    plt.xlim(0, fir1.frequency_range[0] * 4)
+    plt.plot(impulse_response, color='black', linestyle='-', linewidth=2, label='Impulse')
+    plt.plot(filtered_impulse_response, color='red', linestyle='-', linewidth=2, label='Filtered')
+    plt.ylim((-0.06, 0.06))
     plt.legend()
-    plt.title('Frequency response of filter (fir1)')
-    plt.ylabel('Filter gain')
+    plt.xlabel('Time points (a.u.)')
+    plt.title('Filtering an impulse')
+
+    plt.subplot(223)
+    plt.plot(iir_butterworth.frequency_vector, iir_butterworth.SHAPE, color='black', linestyle='-', linewidth=2,
+             label='Impulse')
+    plt.plot(hz, filter_power, color='red', linestyle='-', linewidth=2, label='Filtered')
+    plt.xlim(0, iir_butterworth.frequency_range[0] * 4)
+    plt.legend()
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel('Attenuation')
+    plt.title('Frequency response of filter (Butterwoth)')
 
     plt.subplot(224)
-    plt.plot(evaluation.hz, 10 * np.log10(evaluation.filter_power), color='black', linestyle='-', marker='s',
-             linewidth=2)
-    plt.xlim(0, fir1.frequency_range[0] * 4)
-    plt.ylim(-50, 2)
+    plt.plot(hz, 10 * np.log10(filter_power), color='black', linestyle='-', linewidth=2)
+    plt.xlim(0, iir_butterworth.frequency_range[0] * 4)
     plt.xlabel('Frequency (Hz)')
-    plt.ylabel('Filter gain (dB)')
+    plt.ylabel('Attenuation')
+    plt.title('Frequency response of filter (Butterwoth)')
 
     plt.show()
 
 
 if __name__ == '__main__':
     # firls_ex1()
-    firls_ex2()
+    # firls_ex2()
     # firls_ex3()
 
     # fir1_ex1()
     # fir1_ex2()
 
-    # iir_butterworth_ex1()
+    iir_butterworth_ex1()
